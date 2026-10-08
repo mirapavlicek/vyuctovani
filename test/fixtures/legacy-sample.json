@@ -1,0 +1,192 @@
+{
+  "settings": {
+    "landlordName": "Pronajímatel Testovací",
+    "landlordAddress": "Testovací 1, Praha",
+    "tenantName": "Jan Nájemník",
+    "unitAddress": "Ukázková 10, Praha",
+    "unitArea": "62",
+    "totalArea": "124",
+    "personCount": "1",
+    "totalPersons": "1",
+    "periodFrom": "2025-10-01",
+    "periodTo": "2026-04-30",
+    "moveInDate": "2025-10-01",
+    "anniversaryDay": ""
+  },
+  "items": [
+    {
+      "id": 1777381481247,
+      "typeId": "gas",
+      "typeName": "Plyn",
+      "customName": "",
+      "totalCost": 26314.79,
+      "distribution": "meter",
+      "totalConsumption": 1137,
+      "tenantConsumption": 1137,
+      "linkedMeterId": 1773940822309,
+      "fixedAmount": 0,
+      "totalUnits": 1
+    },
+    {
+      "id": 1777383052831,
+      "typeId": "cold_water",
+      "typeName": "Studená voda",
+      "customName": "",
+      "totalCost": 4375,
+      "distribution": "meter",
+      "totalConsumption": 24.993,
+      "tenantConsumption": 24.993,
+      "linkedMeterId": 1773940705458,
+      "readingFromId": 1777381849121,
+      "readingToId": 1777382568103,
+      "itemPeriodFrom": "2025-10-01",
+      "itemPeriodTo": "2026-04-30",
+      "fixedAmount": 0,
+      "totalUnits": 1
+    },
+    {
+      "id": 1777383181251,
+      "typeId": "electricity",
+      "typeName": "Elektřina – byt",
+      "customName": "",
+      "totalCost": 8238,
+      "distribution": "meter",
+      "totalConsumption": 2060,
+      "tenantConsumption": 2060,
+      "linkedMeterId": 1773995153840,
+      "readingFromId": 1777381905302,
+      "readingToId": 1777382920922,
+      "itemPeriodFrom": "",
+      "itemPeriodTo": "",
+      "fixedAmount": 0,
+      "totalUnits": 1
+    },
+    {
+      "id": 1777383206893,
+      "typeId": "common_electricity",
+      "typeName": "Elektřina – společné prostory",
+      "customName": "",
+      "totalCost": 100,
+      "distribution": "area",
+      "totalConsumption": 0,
+      "tenantConsumption": 0,
+      "linkedMeterId": null,
+      "readingFromId": null,
+      "readingToId": null,
+      "itemPeriodFrom": "",
+      "itemPeriodTo": "",
+      "fixedAmount": 0,
+      "totalUnits": 1
+    }
+  ],
+  "meters": [
+    {
+      "id": 1773940705458,
+      "type": "cold_water",
+      "typeName": "Studená voda",
+      "unit": "m³",
+      "number": "TEST-VODA-001",
+      "readings": [
+        {
+          "id": 1773940705459,
+          "type": "initial",
+          "label": "Počáteční stav (nastěhování)",
+          "date": "2025-01-10",
+          "value": 19.642
+        },
+        {
+          "id": 1777381849121,
+          "type": "handover",
+          "label": "Stav při předání",
+          "date": "2025-10-01",
+          "value": 19.642
+        },
+        {
+          "id": 1777382568103,
+          "type": "billing",
+          "label": "Odečet k 30. 4. 2026",
+          "date": "2026-04-30",
+          "value": 44.635
+        }
+      ]
+    },
+    {
+      "id": 1773940822309,
+      "type": "gas",
+      "typeName": "Plyn",
+      "unit": "m³",
+      "number": "TEST-PLYN-001",
+      "readings": [
+        {
+          "id": 1773940822310,
+          "type": "initial",
+          "label": "Počáteční stav (nastěhování)",
+          "date": "2025-10-01",
+          "value": 6016
+        },
+        {
+          "id": 1777381441416,
+          "type": "handover",
+          "label": "Stav při předání",
+          "date": "2025-10-01",
+          "value": 6016
+        },
+        {
+          "id": 1777382451850,
+          "type": "billing",
+          "label": "Odečet k 30. 4. 2026",
+          "date": "2026-04-03",
+          "value": 7153
+        }
+      ]
+    },
+    {
+      "id": 1773995153840,
+      "type": "electricity_dual",
+      "typeName": "Elektřina (dvoutarif VT/NT)",
+      "unit": "kWh",
+      "number": "TEST-ELEKTRO-001",
+      "dualTariff": true,
+      "readings": [
+        {
+          "id": 1773995153841,
+          "type": "initial",
+          "label": "Počáteční stav (nastěhování)",
+          "date": "2025-10-01",
+          "value": 8895,
+          "valueVT": 3780,
+          "valueNT": 5115
+        },
+        {
+          "id": 1777381905302,
+          "type": "handover",
+          "label": "Stav při předání",
+          "date": "2025-10-01",
+          "value": 8895,
+          "valueVT": 3780,
+          "valueNT": 5115
+        },
+        {
+          "id": 1777382920922,
+          "type": "billing",
+          "label": "Odečet k 30. 4. 2026",
+          "date": "2026-04-30",
+          "value": 10955,
+          "valueVT": 4750,
+          "valueNT": 6205
+        }
+      ]
+    }
+  ],
+  "advances": [
+    {
+      "id": 1773995480380,
+      "type": "total",
+      "typeName": "Celková záloha",
+      "monthly": 6000,
+      "from": "2025-10-01",
+      "to": "",
+      "note": ""
+    }
+  ]
+}

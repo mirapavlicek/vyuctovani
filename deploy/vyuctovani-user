@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Správa uživatelů aplikace na serveru: sudo vyuctovani-user add|passwd|del|list [jmeno]
+set -euo pipefail
+cd /opt/vyuctovani
+exec runuser -u vyuctovani -- node src/cli.js "$@"

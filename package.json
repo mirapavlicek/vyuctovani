@@ -1,0 +1,21 @@
+{
+  "name": "vyuctovani",
+  "version": "1.0.0",
+  "description": "Vyúčtování služeb spojených s nájmem bytu",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "user": "node src/cli.js"
+  },
+  "type": "module",
+  "dependencies": {
+    "express": "^5.2.1",
+    "htm": "^3.1.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}

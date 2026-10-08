@@ -1,0 +1,29 @@
+[Unit]
+Description=Vyúčtování služeb (webová aplikace)
+After=network.target
+
+[Service]
+Type=simple
+User=vyuctovani
+Group=vyuctovani
+WorkingDirectory=/opt/vyuctovani
+Environment=NODE_ENV=production
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/usr/bin/env node src/server.js
+Restart=on-failure
+RestartSec=3
+
+# Zabezpečení
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/vyuctovani
+
+[Install]
+WantedBy=multi-user.target
