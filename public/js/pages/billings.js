@@ -87,10 +87,19 @@ export function NewBilling({ tenantId }) {
         }));
         // služby, které mají fakturu v období, ale nemají měřidlo (např. společná elektřina)
         const covered = new Set(items.map((i) => i.type_id));
+        // fond oprav podle zálohy nájemníka
+        const rf = tenant.advances.find((a) => a.type === 'repair_fund' && (!a.date_to || a.date_to >= f.period_from));
+        if (rf) {
+          covered.add('repair_fund');
+          items.push({ type_id: 'repair_fund', distribution: 'monthly', fixed_amount: rf.monthly, cost_from_invoices: 0 });
+        }
         for (const inv of invoices) {
           if (covered.has(inv.service_type) || inv.period_to < f.period_from || inv.period_from > f.period_to) continue;
           covered.add(inv.service_type);
-          items.push({ type_id: inv.service_type, distribution: inv.service_type.startsWith('common_') ? 'area' : 'full', total_cost: 0, cost_from_invoices: 1 });
+          items.push({
+            type_id: inv.service_type, total_cost: 0, cost_from_invoices: 1,
+            distribution: inv.service_type.startsWith('common_') ? 'area' : inv.service_type === 'repair_fund' ? 'monthly' : 'full',
+          });
         }
       }
       const r = await run(() => post('/billings', { tenant_id: f.tenant_id, period_from: f.period_from, period_to: f.period_to, items }), 'Vyúčtování vytvořeno');
@@ -126,7 +135,10 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
     const m = meters.find((x) => x.id === +v);
     onChange({ ...item, meter_id: m ? m.id : null, ...(m ? suggestReadings(m, item.period_from || billing.period_from, item.period_to || billing.period_to) : { reading_from_id: null, reading_to_id: null }) });
   };
-  const setType = (v) => onChange({ ...item, type_id: v });
+  const setType = (v) => onChange(v === 'repair_fund'
+    ? { ...item, type_id: v, distribution: 'monthly', cost_from_invoices: 0 }
+    : { ...item, type_id: v });
+  const monthlyCalc = item.distribution === 'monthly' && !item.cost_from_invoices;
   const auto = !!(item.meter_id && item.reading_from_id && item.reading_to_id);
   const [more, setMore] = useState(!!(item.period_from || item.period_to || item.note));
 
@@ -145,7 +157,7 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
       <${Field} label="Služba"><${Select} value=${item.type_id} onChange=${setType} options=${SERVICE_TYPES} /></${Field}>
       <${Field} label="Vlastní název" hint="nepovinné"><${TextInput} value=${item.name} onChange=${set('name')} placeholder=${SERVICE_TYPES[item.type_id]} /></${Field}>
       <${Field} label="Celkový náklad (Kč)">
-        ${item.cost_from_invoices ? html`<input class="num" value=${fmtNum(computed?.total_cost, 2)} disabled />`
+        ${item.cost_from_invoices || monthlyCalc ? html`<input class="num" value=${fmtNum(computed?.total_cost, 2)} disabled />`
           : html`<${NumInput} value=${item.total_cost} onChange=${set('total_cost')} />`}
         <label class="check inline"><input type="checkbox" checked=${!!item.cost_from_invoices}
           onChange=${(e) => onChange({ ...item, cost_from_invoices: e.target.checked ? 1 : 0, total_cost: e.target.checked ? item.total_cost : computed?.total_cost ?? item.total_cost })} /> Z faktur (+ odhad dle ceníku)</label>
@@ -187,6 +199,11 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
       ${item.distribution === 'area' ? html`<p class="muted wide">Podíl ${fmtNum(billing.unit_area, 2)} / ${fmtNum(billing.total_area, 2)} m² (nastavuje se v hlavičce vyúčtování).</p>` : null}
       ${item.distribution === 'persons' ? html`<p class="muted wide">Podíl ${billing.person_count || 0} / ${billing.total_persons || 0} osob (nastavuje se v hlavičce vyúčtování).</p>` : null}
       ${item.distribution === 'units' ? html`<${Field} label="Počet dílů (jednotek)"><${NumInput} value=${item.total_units} onChange=${set('total_units')} /></${Field}>` : null}
+      ${monthlyCalc ? html`<${Field} label="Měsíčně (Kč)" hint=${item.type_id === 'repair_fund' ? 'předpis fondu oprav od SVJ' : ''}>
+          <${NumInput} value=${item.fixed_amount} onChange=${set('fixed_amount')} /></${Field}>
+        <p class="muted wide">${fmtMoney(item.fixed_amount || 0)} × ${fmtNum(computed?.months || 0, Number.isInteger(computed?.months) ? 0 : 2)} měsíců
+          (${fmtPeriod(computed?.period_from, computed?.period_to)}) = <b>${fmtMoney(computed?.share || 0)}</b></p>` : null}
+      ${item.type_id === 'repair_fund' ? html`<p class="muted wide">Fond oprav není službou dle zák. 67/2013 Sb. – ve vyúčtování se uvede odděleně jako ostatní platba.</p>` : null}
       ${item.distribution === 'fixed' ? html`<${Field} label="Pevná částka nájemníka (Kč)"><${NumInput} value=${item.fixed_amount} onChange=${set('fixed_amount')} /></${Field}>` : null}
 
       ${more ? html`

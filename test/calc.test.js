@@ -148,3 +148,25 @@ test('převod přeplatku a doúčtování po přijetí skutečné faktury', asyn
   const dId = insert('billings', COLS.billings, { tenant_id: tenantId, period_from: '2028-01-01', period_to: '2028-12-31' });
   assert.equal(billingDocument(dId).adjustments.length, 0);
 });
+
+test('fond oprav – měsíční částka × nájemní měsíce, oddělený od služeb', async () => {
+  const { computeBilling } = await import('../public/js/calc.js');
+  const doc = computeBilling({
+    billing: { period_from: '2026-05-01', period_to: '2026-12-31', anniversary_day: 1 },
+    items: [
+      { type_id: 'repair_fund', distribution: 'monthly', fixed_amount: 800 },
+      { type_id: 'cold_water', distribution: 'full', total_cost: 1000 },
+      { type_id: 'repair_fund', distribution: 'monthly', fixed_amount: 800, period_from: '2026-05-16', period_to: '2026-06-15' },
+    ],
+    advances: [{ type: 'repair_fund', monthly: 800, date_from: '2026-05-01' }],
+  });
+  assert.equal(doc.items[0].months, 8);
+  assert.equal(doc.items[0].share, 6400);
+  assert.equal(doc.items[0].is_service, false);
+  assert.equal(doc.items[1].is_service, true);
+  // 16.–31. 5. (16/31) + 1.–15. 6. (15/30)
+  assert.equal(doc.items[2].share, Math.round(800 * (Math.round((16 / 31 + 15 / 30) * 10000) / 10000) * 100) / 100);
+  assert.equal(doc.totals.other_costs, Math.round((6400 + doc.items[2].share) * 100) / 100);
+  assert.equal(doc.totals.service_costs, 1000);
+  assert.equal(doc.advances[0].amount, 6400);
+});

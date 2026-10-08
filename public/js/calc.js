@@ -23,8 +23,13 @@ export const SERVICE_TYPES = {
   cleaning: 'Úklid společných prostor',
   tv: 'Společná anténa / TV',
   internet: 'Internet',
+  repair_fund: 'Fond oprav',
   other: 'Jiná služba',
 };
+
+/** Platby, které nejsou službami dle zák. 67/2013 Sb. – ve vyúčtování se uvádějí odděleně. */
+export const NON_SERVICES = new Set(['repair_fund']);
+export const isService = (typeId) => !NON_SERVICES.has(typeId);
 
 export const DISTRIBUTIONS = {
   meter: 'Podle měřidla',
@@ -33,6 +38,7 @@ export const DISTRIBUTIONS = {
   units: 'Rovným dílem',
   fixed: 'Pevná částka',
   full: 'Celá částka',
+  monthly: 'Měsíční částka × měsíce',
 };
 
 export const READING_TYPES = {
@@ -46,6 +52,7 @@ export const READING_TYPES = {
 export const ADVANCE_TYPES = {
   total: 'Celková záloha',
   service: 'Záloha na službu',
+  repair_fund: 'Záloha na fond oprav',
 };
 
 const num = (v) => {
@@ -283,6 +290,8 @@ export function computeBilling(input) {
     for (const r of m.readings || []) readingById.set(r.id, { ...r, meter: m });
   }
 
+  const annDay = num(b.anniversary_day) || (parseDate(b.move_in) !== null ? new Date(parseDate(b.move_in)).getUTCDate() : 1);
+
   const items = (input.items || []).map((it, idx) => {
     const itemFrom = it.period_from || b.period_from;
     const itemTo = it.period_to || b.period_to;
@@ -320,12 +329,19 @@ export function computeBilling(input) {
 
     let share = 0;
     let ratio = null;
+    let months = null;
+    if (it.distribution === 'monthly') {
+      // pevná měsíční částka (např. předpis fondu oprav) × nájemní měsíce v období položky
+      months = itemFrom && itemTo ? rentalMonths(itemFrom, itemTo, annDay).months : 0;
+      if (!it.cost_from_invoices) cost = round2(num(it.fixed_amount) * months);
+    }
     switch (it.distribution) {
       case 'meter': ratio = totalCons > 0 ? tenantCons / totalCons : 0; break;
       case 'area': ratio = num(b.total_area) > 0 ? num(b.unit_area) / num(b.total_area) : 0; break;
       case 'persons': ratio = num(b.total_persons) > 0 ? num(b.person_count) / num(b.total_persons) : 0; break;
       case 'units': ratio = num(it.total_units) > 0 ? 1 / num(it.total_units) : 0; break;
       case 'fixed': share = round2(it.fixed_amount); break;
+      case 'monthly': share = it.cost_from_invoices ? cost : round2(num(it.fixed_amount) * months); break;
       case 'full': default: ratio = 1;
     }
     if (ratio !== null) share = round2(cost * ratio);
@@ -345,13 +361,14 @@ export function computeBilling(input) {
       invoices,
       estimate,
       estimated,
+      months,
+      is_service: isService(it.type_id),
       period_from: itemFrom,
       period_to: itemTo,
       distribution_label: DISTRIBUTIONS[it.distribution] || DISTRIBUTIONS.full,
     };
   });
 
-  const annDay = num(b.anniversary_day) || (parseDate(b.move_in) !== null ? new Date(parseDate(b.move_in)).getUTCDate() : 1);
   const advances = (input.advances || [])
     .map((a) => {
       const from = maxDate(a.date_from, b.period_from);
@@ -370,6 +387,7 @@ export function computeBilling(input) {
 
   const adjustments = (input.adjustments || []).map((a) => ({ ...a, amount: round2(a.amount) }));
   const totalCosts = round2(items.reduce((s, i) => s + i.share, 0));
+  const otherCosts = round2(items.filter((i) => !i.is_service).reduce((s, i) => s + i.share, 0));
   const totalAdvances = round2(advances.reduce((s, a) => s + a.amount, 0));
   const totalAdjustments = round2(adjustments.reduce((s, a) => s + a.amount, 0));
   const estimatedShare = round2(items.reduce((s, i) => s + (i.estimated && i.total_cost ? i.share * (i.estimated / i.total_cost) : 0), 0));
@@ -383,6 +401,8 @@ export function computeBilling(input) {
     meters: meterTable(meters, b.period_from, b.period_to),
     totals: {
       costs: totalCosts,
+      service_costs: round2(totalCosts - otherCosts),
+      other_costs: otherCosts,
       advances: totalAdvances,
       adjustments: totalAdjustments,
       estimated: estimatedShare,

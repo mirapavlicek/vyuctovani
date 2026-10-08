@@ -11,6 +11,24 @@ function MeterDiff({ d, dual, unit }) {
   return html`${fmtNum(d.value)} ${unit}${dual ? html`<br /><small>VT ${fmtNum(d.vt)} | NT ${fmtNum(d.nt)}</small>` : null}`;
 }
 
+function ItemsTable({ items, b, totalLabel, total }) {
+  return html`<table class="doc-table">
+    <thead><tr><th>#</th><th>Položka</th><th>Období</th><th class="r">Celk. náklad</th><th>Rozúčtování</th><th class="r">Podíl nájemníka</th></tr></thead>
+    <tbody>${items.map((it) => html`<tr class="keep">
+      <td>${it.position}</td>
+      <td>${it.name}${it.detail ? html`<br /><small>${it.detail}</small>` : null}${it.invoices?.length ? it.invoices.map((x) => html`<br /><small>Faktura ${x.supplier || ''}${x.number ? ` č. ${x.number}` : ''} za ${fmtPeriod(x.period_from, x.period_to)}: ${fmtMoney(x.amount)}${x.ratio < 1 ? ` → poměrně ${x.overlap}/${x.days} dní = ${fmtMoney(x.portion)}` : ''}</small>`) : null}${(it.estimate || []).filter((p) => !p.missing).map((p) => html`<br /><small class="est-print">* ${describeEstimate(p, it.unit)}</small>`)}${it.note ? html`<br /><small>${it.note}</small>` : null}</td>
+      <td>${fmtPeriod(it.period_from, it.period_to)}</td>
+      <td class="r nowrap">${fmtMoney(it.total_cost)}</td>
+      <td>${it.distribution_label}${it.distribution === 'area' ? html`<br /><small>${fmtNum(b.unit_area, 2)} / ${fmtNum(b.total_area, 2)} m²</small>`
+        : it.distribution === 'persons' ? html`<br /><small>${b.person_count} / ${b.total_persons} os.</small>`
+        : it.distribution === 'units' ? html`<br /><small>1 / ${fmtNum(it.total_units, 0)}</small>`
+        : it.distribution === 'monthly' && !it.cost_from_invoices ? html`<br /><small>${fmtMoney(it.fixed_amount)} × ${fmtNum(it.months, Number.isInteger(it.months) ? 0 : 2)} měs.</small>`
+        : it.distribution === 'meter' && it.total_consumption && it.total_consumption !== it.tenant_consumption ? html`<br /><small>${fmtNum(it.tenant_consumption)} / ${fmtNum(it.total_consumption)}</small>` : null}</td>
+      <td class="r nowrap">${fmtMoney(it.share)}</td></tr>`)}</tbody>
+    <tfoot><tr><td colspan="5" class="r">${totalLabel}</td><td class="r nowrap"><b>${fmtMoney(total)}</b></td></tr></tfoot>
+  </table>`;
+}
+
 export function BillingPrint({ id }) {
   const state = useLoad(() => Promise.all([get(`/billings/${id}/document`), get('/settings')]), [id]);
   useEffect(() => {
@@ -20,6 +38,7 @@ export function BillingPrint({ id }) {
   return html`<${Loading} state=${state}>${([doc, settings]) => {
     const b = doc.billing;
     const t = doc.totals;
+    const others = doc.items.filter((i) => i.is_service === false);
     let sec = 1;
     const n = () => sec++;
     const today = fmtDate(new Date().toISOString().slice(0, 10));
@@ -63,24 +82,18 @@ export function BillingPrint({ id }) {
 
         <section>
           <h2>${n()}. Rozúčtování nákladů na služby</h2>
-          <table class="doc-table">
-            <thead><tr><th>#</th><th>Služba</th><th>Období</th><th class="r">Celk. náklad</th><th>Rozúčtování</th><th class="r">Podíl nájemníka</th></tr></thead>
-            <tbody>${doc.items.map((it) => html`<tr class="keep">
-              <td>${it.position}</td>
-              <td>${it.name}${it.detail ? html`<br /><small>${it.detail}</small>` : null}${it.invoices?.length ? it.invoices.map((x) => html`<br /><small>Faktura ${x.supplier || ''}${x.number ? ` č. ${x.number}` : ''} za ${fmtPeriod(x.period_from, x.period_to)}: ${fmtMoney(x.amount)}${x.ratio < 1 ? ` → poměrně ${x.overlap}/${x.days} dní = ${fmtMoney(x.portion)}` : ''}</small>`) : null}${(it.estimate || []).filter((p) => !p.missing).map((p) => html`<br /><small class="est-print">* ${describeEstimate(p, it.unit)}</small>`)}${it.note ? html`<br /><small>${it.note}</small>` : null}</td>
-              <td>${fmtPeriod(it.period_from, it.period_to)}</td>
-              <td class="r nowrap">${fmtMoney(it.total_cost)}</td>
-              <td>${it.distribution_label}${it.distribution === 'area' ? html`<br /><small>${fmtNum(b.unit_area, 2)} / ${fmtNum(b.total_area, 2)} m²</small>`
-                : it.distribution === 'persons' ? html`<br /><small>${b.person_count} / ${b.total_persons} os.</small>`
-                : it.distribution === 'units' ? html`<br /><small>1 / ${fmtNum(it.total_units, 0)}</small>`
-                : it.distribution === 'meter' && it.total_consumption && it.total_consumption !== it.tenant_consumption ? html`<br /><small>${fmtNum(it.tenant_consumption)} / ${fmtNum(it.total_consumption)}</small>` : null}</td>
-              <td class="r nowrap">${fmtMoney(it.share)}</td></tr>`)}</tbody>
-            <tfoot><tr><td colspan="5" class="r">Celkem náklady nájemníka:</td><td class="r nowrap"><b>${fmtMoney(t.costs)}</b></td></tr></tfoot>
-          </table>
+          <${ItemsTable} items=${doc.items.filter((i) => i.is_service !== false)} b=${b}
+            totalLabel=${others.length ? 'Celkem služby:' : 'Celkem náklady nájemníka:'} total=${others.length ? t.service_costs : t.costs} />
           ${t.estimated ? html`<p class="small">* Část nákladů (podíl nájemníka ${fmtMoney(t.estimated)}) je za období, za které pronajímatel dosud neobdržel
             vyúčtování dodavatele, a je stanovena odhadem podle smluvních cen. Rozdíl oproti skutečnému vyúčtování dodavatele
             bude zohledněn v příštím vyúčtování.</p>` : null}
         </section>
+
+        ${others.length ? html`<section>
+          <h2>${n()}. Ostatní platby spojené s nájmem</h2>
+          <p class="small">Nejsou službami dle zák. č. 67/2013 Sb.; uvádějí se pro úplnost vyrovnání plateb nájemníka.</p>
+          <${ItemsTable} items=${others} b=${b} totalLabel="Celkem ostatní platby:" total=${t.other_costs} />
+        </section>` : null}
 
         <section class="keep">
           <h2>${n()}. Přehled zaplacených záloh</h2>
@@ -107,7 +120,9 @@ export function BillingPrint({ id }) {
         <section class="keep">
           <h2>${n()}. Výsledek vyúčtování</h2>
           <dl class="totals">
-            <dt>Celkové náklady na služby:</dt><dd>${fmtMoney(t.costs)}</dd>
+            ${others.length
+              ? html`<dt>Náklady na služby:</dt><dd>${fmtMoney(t.service_costs)}</dd><dt>Ostatní platby (fond oprav apod.):</dt><dd>${fmtMoney(t.other_costs)}</dd>`
+              : html`<dt>Celkové náklady na služby:</dt><dd>${fmtMoney(t.costs)}</dd>`}
             <dt>Celkové zaplacené zálohy:</dt><dd>${fmtMoney(t.advances)}</dd>
             ${t.adjustments ? html`<dt>Převody a doúčtování z předchozích období:</dt><dd>${t.adjustments > 0 ? '+' : ''}${fmtMoney(t.adjustments)}</dd>` : null}
           </dl>
