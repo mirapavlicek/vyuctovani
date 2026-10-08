@@ -178,3 +178,15 @@ table.list.compact td { padding: .3rem .4rem; font-size: .88rem; border-bottom-c
 .filter select { width: auto; }
 ul.files { margin: 0 0 .4rem; }
 ul.files li { padding: .15rem 0; }
+.modal-bg { position: fixed; inset: 0; background: rgba(20,30,40,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 1rem; }
+.modal { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: .75rem; margin: 0; }
+.modal .radios { display: flex; flex-direction: column; gap: .2rem; }
+.modal .radios .check { padding: 0; align-self: start; }
+.summary small { font-size: .8rem; }
+.settlement-line { margin-top: .35rem; }
+.warn-box { background: #fff7e6; border-color: #f1d9a6; }
+tr.est td { color: #5a4a20; }
+.est-tag { display: inline-block; font-size: .7rem; font-weight: 600; text-transform: uppercase; background: #fff1cc; color: var(--warn); border-radius: 4px; padding: 0 .35rem; margin-right: .25rem; }
+.warn-text { color: var(--warn); }
+.small-note { font-size: .8rem; margin: .3rem 0 .1rem; }
+.doc .est-print { color: #6a5520; }

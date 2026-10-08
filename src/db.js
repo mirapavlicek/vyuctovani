@@ -157,6 +157,35 @@ const MIGRATIONS = [
   CREATE INDEX invoice_files_invoice ON invoice_files(invoice_id);
   ALTER TABLE billing_items ADD COLUMN cost_from_invoices INTEGER NOT NULL DEFAULT 0;
   `,
+  // 3: ceníky (odhad nákladů), vypořádání výsledku a převody/doúčtování mezi obdobími
+  `
+  CREATE TABLE tariffs (
+    id INTEGER PRIMARY KEY,
+    unit_id INTEGER NOT NULL REFERENCES units(id) ON DELETE CASCADE,
+    service_type TEXT NOT NULL,
+    name TEXT,
+    valid_from TEXT,
+    valid_to TEXT,
+    price_per_unit REAL,
+    price_vt REAL,
+    price_nt REAL,
+    fixed_monthly REAL,
+    note TEXT
+  );
+  CREATE INDEX tariffs_unit ON tariffs(unit_id, service_type, valid_from);
+  CREATE TABLE billing_adjustments (
+    id INTEGER PRIMARY KEY,
+    billing_id INTEGER NOT NULL REFERENCES billings(id) ON DELETE CASCADE,
+    source_billing_id INTEGER REFERENCES billings(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,
+    label TEXT,
+    amount REAL NOT NULL
+  );
+  CREATE INDEX billing_adjustments_source ON billing_adjustments(source_billing_id);
+  ALTER TABLE billings ADD COLUMN settlement TEXT;
+  ALTER TABLE billings ADD COLUMN settlement_note TEXT;
+  ALTER TABLE billings ADD COLUMN settled_at TEXT;
+  `,
 ];
 
 const { user_version: version } = db.prepare('PRAGMA user_version').get();
@@ -205,7 +234,8 @@ const NUMERIC = new Set([
   'area', 'total_area', 'total_persons', 'value', 'value_vt', 'value_nt', 'person_count', 'anniversary_day', 'monthly',
   'unit_area', 'total_cost', 'total_consumption', 'tenant_consumption', 'fixed_amount', 'total_units', 'position',
   'unit_id', 'tenant_id', 'meter_id', 'reading_from_id', 'reading_to_id', 'billing_id', 'dual_tariff', 'active',
-  'amount', 'consumption', 'cost_from_invoices',
+  'amount', 'consumption', 'cost_from_invoices', 'price_per_unit', 'price_vt', 'price_nt', 'fixed_monthly',
+  'source_billing_id',
 ]);
 
 function norm(v, col) {

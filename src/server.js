@@ -7,7 +7,8 @@ import {
   authenticate, startSession, endSession, sessionMiddleware, requireAuth, purgeSessions,
   loginLimited, loginFailed, loginSucceeded, verifyPassword, hashPassword, validatePassword,
 } from './auth.js';
-import { COLS, getUnit, getTenant, getBilling, billingInput, billingDocument, billingDefaults, invoicesFor, withFiles } from './repo.js';
+import { COLS, getUnit, getTenant, getBilling, billingInput, billingDocument, billingDefaults, invoicesFor, withFiles,
+  pendingAdjustments, recordedAdjustments, trueupFor, finalizeBilling } from './repo.js';
 import { importLegacy } from './legacy.js';
 import { computeBilling } from '../public/js/calc.js';
 import { backupNow, scheduleBackups } from './backup.js';
@@ -213,6 +214,33 @@ api.delete('/advances/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- ceníky (smluvní ceny pro odhad) ----------
+api.get('/tariffs', (req, res) => {
+  const q = req.query.unit
+    ? db.prepare('SELECT t.*, u.address AS unit_address FROM tariffs t JOIN units u ON u.id = t.unit_id WHERE t.unit_id = ? ORDER BY t.service_type, t.valid_from').all(Number(req.query.unit))
+    : db.prepare('SELECT t.*, u.address AS unit_address FROM tariffs t JOIN units u ON u.id = t.unit_id ORDER BY t.service_type, t.valid_from').all();
+  res.json(q);
+});
+function checkTariff(b, creating) {
+  checkDates(b, ['valid_from', 'valid_to']);
+  if (creating && (!b.unit_id || !b.service_type)) throw err(400, 'Vyber byt a službu.');
+  if (b.valid_from && b.valid_to && b.valid_from > b.valid_to) throw err(400, 'Platnost: „od“ je po „do“.');
+}
+api.post('/tariffs', (req, res) => {
+  checkTariff(req.body || {}, true);
+  res.json({ id: insert('tariffs', COLS.tariffs, req.body) });
+});
+api.put('/tariffs/:id', (req, res) => {
+  checkTariff(req.body || {}, false);
+  const { unit_id: _ignored, ...b } = req.body || {};
+  update('tariffs', COLS.tariffs, id(req), b);
+  res.json({ ok: true });
+});
+api.delete('/tariffs/:id', (req, res) => {
+  db.prepare('DELETE FROM tariffs WHERE id = ?').run(id(req));
+  res.json({ ok: true });
+});
+
 // ---------- faktury dodavatelů ----------
 const INVOICE_SQL = `SELECT i.*, u.address AS unit_address FROM invoices i JOIN units u ON u.id = i.unit_id`;
 const getInvoice = (iid) => {
@@ -281,14 +309,9 @@ api.delete('/files/:id', (req, res) => {
 // ---------- vyúčtování ----------
 api.get('/billings', (_req, res) => {
   const rows = db.prepare(`
-    SELECT b.id, b.tenant_id, b.period_from, b.period_to, b.status, b.tenant_name, b.unit_address, b.updated_at, b.snapshot
+    SELECT b.id, b.tenant_id, b.period_from, b.period_to, b.status, b.tenant_name, b.unit_address, b.updated_at, b.settlement
     FROM billings b ORDER BY b.period_to DESC, b.id DESC`).all();
-  res.json(
-    rows.map(({ snapshot, ...b }) => {
-      const doc = snapshot ? JSON.parse(snapshot) : computeBilling(billingInput(getBilling(b.id)));
-      return { ...b, totals: doc.totals };
-    }),
-  );
+  res.json(rows.map((b) => ({ ...b, totals: billingDocument(b.id).totals })));
 });
 
 api.get('/billings/defaults/:id', (req, res) => {
@@ -302,7 +325,20 @@ api.get('/billings/:id', (req, res) => {
   if (!b) throw err(404, 'Vyúčtování nenalezeno.');
   const { snapshot, ...rest } = b;
   const input = billingInput(b);
-  res.json({ ...rest, meters: input.meters, advances: input.advances, invoices: input.invoices });
+  const final = b.status === 'final';
+  // u uzavřeného: kolik se ještě doúčtuje v dalším období (faktury přišly po uzavření)
+  let trueupPending = 0;
+  if (final && snapshot) {
+    const applied = db.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM billing_adjustments WHERE source_billing_id = ? AND kind = 'trueup'").get(b.id).s;
+    trueupPending = Math.round((trueupFor(b, JSON.parse(snapshot)) - applied) * 100) / 100;
+  }
+  const usedIn = db.prepare(`SELECT DISTINCT b.id, b.period_from, b.period_to FROM billing_adjustments a JOIN billings b ON b.id = a.billing_id
+                             WHERE a.source_billing_id = ?`).all(b.id);
+  res.json({
+    ...rest, meters: input.meters, advances: input.advances, invoices: input.invoices, tariffs: input.tariffs,
+    adjustments: final ? recordedAdjustments(b.id) : pendingAdjustments(b), trueup_pending: trueupPending, used_in: usedIn,
+    document: final ? billingDocument(b.id) : null,
+  });
 });
 
 api.get('/billings/:id/document', (req, res) => {
@@ -356,17 +392,44 @@ api.put('/billings/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+const SETTLEMENT_VALUES = ['carry', 'paid', 'open'];
+function checkSettlement(body) {
+  const st = body?.settlement || 'open';
+  if (!SETTLEMENT_VALUES.includes(st)) throw err(400, 'Neplatné vypořádání.');
+  checkDates(body || {}, ['settled_at']);
+  return { settlement: st, settlement_note: body?.settlement_note || null, settled_at: st === 'paid' ? body?.settled_at || null : null };
+}
+
 api.post('/billings/:id/finalize', (req, res) => {
   const b = getBilling(id(req));
   if (!b) throw err(404, 'Vyúčtování nenalezeno.');
-  const doc = computeBilling(billingInput(b));
-  db.prepare("UPDATE billings SET status = 'final', snapshot = ?, finalized_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
-    .run(JSON.stringify(doc), b.id);
+  if (b.status === 'final') throw err(409, 'Vyúčtování už je uzavřené.');
+  const st = checkSettlement(req.body);
+  tx(() => finalizeBilling(b, st));
+  res.json({ ok: true });
+});
+
+api.put('/billings/:id/settlement', (req, res) => {
+  const b = getBilling(id(req));
+  if (!b || b.status !== 'final') throw err(409, 'Vypořádání lze nastavit jen u uzavřeného vyúčtování.');
+  const st = checkSettlement(req.body);
+  const carried = db.prepare("SELECT 1 FROM billing_adjustments WHERE source_billing_id = ? AND kind = 'carry'").get(b.id);
+  if (carried && st.settlement !== 'carry') throw err(409, 'Výsledek už byl převeden do uzavřeného navazujícího vyúčtování – nejdřív ho znovu otevři.');
+  db.prepare("UPDATE billings SET settlement = ?, settlement_note = ?, settled_at = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(st.settlement, st.settlement_note, st.settled_at, b.id);
   res.json({ ok: true });
 });
 
 api.post('/billings/:id/reopen', (req, res) => {
-  db.prepare("UPDATE billings SET status = 'draft', snapshot = NULL, finalized_at = NULL, updated_at = datetime('now') WHERE id = ?").run(id(req));
+  const bid = id(req);
+  const used = db.prepare(`SELECT b.period_from, b.period_to FROM billing_adjustments a JOIN billings b ON b.id = a.billing_id
+                           WHERE a.source_billing_id = ? LIMIT 1`).get(bid);
+  if (used) throw err(409, `Z tohoto vyúčtování už převzalo převod/doúčtování uzavřené vyúčtování ${used.period_from} – ${used.period_to}. Nejdřív otevři to.`);
+  tx(() => {
+    db.prepare('DELETE FROM billing_adjustments WHERE billing_id = ?').run(bid);
+    db.prepare(`UPDATE billings SET status = 'draft', snapshot = NULL, finalized_at = NULL, settlement = NULL, settlement_note = NULL,
+                settled_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(bid);
+  });
   res.json({ ok: true });
 });
 

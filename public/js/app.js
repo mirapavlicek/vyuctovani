@@ -41,7 +41,7 @@ function Login({ onLogin }) {
 const NAV = [
   ['/', 'Vyúčtování'],
   ['/najemnici', 'Nájemníci'],
-  ['/faktury', 'Faktury'],
+  ['/faktury', 'Faktury a ceníky'],
   ['/byty', 'Byty a měřidla'],
   ['/nastaveni', 'Nastavení'],
 ];

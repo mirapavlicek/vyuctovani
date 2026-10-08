@@ -75,3 +75,76 @@ test('faktury dodavatelů – poměrná část podle dnů', async () => {
   assert.equal(doc.items[1].share, Math.round(doc.items[1].total_cost / 2 * 100) / 100);
   assert.equal(doc.items[2].total_cost, 500); // bez zaškrtnutí faktury ignoruje
 });
+
+test('odhad dle ceníku – nepokryté dny, dvoutarif, stálý plat', async () => {
+  const { computeBilling, uncoveredIntervals } = await import('../public/js/calc.js');
+  assert.deepEqual(uncoveredIntervals('2026-05-01', '2026-12-31', [{ period_from: '2026-05-01', period_to: '2026-09-30' }]),
+    [{ from: '2026-10-01', to: '2026-12-31' }]);
+  assert.deepEqual(uncoveredIntervals('2026-01-01', '2026-12-31', []), [{ from: '2026-01-01', to: '2026-12-31' }]);
+  // 184 dní bez faktury z 365, spotřeba 1000 kWh (VT 400 / NT 600)
+  const meter = { id: 1, type: 'electricity_dual', dual_tariff: 1, readings: [
+    { id: 1, date: '2026-01-01', value: 0, value_vt: 0, value_nt: 0 },
+    { id: 2, date: '2026-12-31', value: 1000, value_vt: 400, value_nt: 600 }] };
+  const doc = computeBilling({
+    billing: { period_from: '2026-01-01', period_to: '2026-12-31' },
+    meters: [meter],
+    items: [{ id: 7, type_id: 'electricity', distribution: 'meter', meter_id: 1, reading_from_id: 1, reading_to_id: 2, cost_from_invoices: 1 }],
+    invoices: [{ id: 1, service_type: 'electricity', amount: 4000, period_from: '2026-01-01', period_to: '2026-06-30' }],
+    tariffs: [{ id: 1, service_type: 'electricity', name: 'ČEZ 2026', valid_from: '2026-01-01', price_vt: 6, price_nt: 4, fixed_monthly: 150 }],
+  });
+  const it = doc.items[0];
+  assert.equal(it.estimate.length, 1);
+  const share = 184 / 365;
+  const expected = Math.round((400 * share * 6 + 600 * share * 4 + 150 * 6) * 100) / 100; // 1. 7. – 31. 12. = 6 celých měsíců
+  assert.equal(it.estimated, expected);
+  assert.equal(it.total_cost, Math.round((4000 + expected) * 100) / 100);
+  assert.equal(doc.totals.estimated, expected);
+});
+
+test('převod přeplatku a doúčtování po přijetí skutečné faktury', async () => {
+  const { db, insert } = await import('../src/db.js');
+  const { COLS, getBilling, finalizeBilling, billingDocument } = await import('../src/repo.js');
+  const data = JSON.parse(fs.readFileSync(new URL('./fixtures/legacy-sample.json', import.meta.url)));
+  data.settings.unitAddress = 'Převodová 1';
+  const { billingId: aId, tenantId, unitId } = importLegacy(data);
+
+  // A: přeplatek 3022,21 -> převést
+  finalizeBilling(getBilling(aId), { settlement: 'carry' });
+
+  // B: 1. 5. – 31. 12. 2026, elektřina z faktur, ČEZ jen do 30. 9., zbytek odhad
+  const elMeter = db.prepare("SELECT id FROM meters WHERE unit_id = ? AND type = 'electricity_dual'").get(unitId).id;
+  const rFrom = db.prepare("SELECT id FROM readings WHERE meter_id = ? AND date = '2026-04-30'").get(elMeter).id;
+  const rTo = insert('readings', COLS.readings, { meter_id: elMeter, type: 'billing', date: '2026-12-31', value: 12955, value_vt: 5750, value_nt: 7205 });
+  insert('invoices', COLS.invoices, { unit_id: unitId, service_type: 'electricity', period_from: '2026-05-01', period_to: '2026-09-30', amount: 5000 });
+  insert('tariffs', COLS.tariffs, { unit_id: unitId, service_type: 'electricity', name: 'ČEZ', valid_from: '2026-01-01', price_vt: 6, price_nt: 4, fixed_monthly: 0 });
+  const bId = insert('billings', COLS.billings, { tenant_id: tenantId, period_from: '2026-05-01', period_to: '2026-12-31', unit_area: 62, total_area: 124 });
+  insert('billing_items', COLS.billing_items, { billing_id: bId, type_id: 'electricity', distribution: 'meter', meter_id: elMeter,
+    reading_from_id: rFrom, reading_to_id: rTo, cost_from_invoices: 1 });
+
+  const draftB = billingDocument(bId);
+  assert.equal(draftB.adjustments.length, 1);
+  assert.equal(draftB.adjustments[0].kind, 'carry');
+  assert.equal(draftB.adjustments[0].amount, 3022.21);
+  const est = draftB.items[0].estimated;
+  assert.ok(est > 0);
+  finalizeBilling(getBilling(bId), { settlement: 'open' });
+  assert.equal(billingDocument(bId).totals.adjustments, 3022.21);
+
+  // C: navazující období – zatím nic k doúčtování, carry už je spotřebované
+  const cId = insert('billings', COLS.billings, { tenant_id: tenantId, period_from: '2027-01-01', period_to: '2027-12-31' });
+  assert.equal(billingDocument(cId).adjustments.length, 0);
+
+  // přijde skutečná faktura za 1. 10. – 31. 12. -> rozdíl proti odhadu se doúčtuje v C
+  insert('invoices', COLS.invoices, { unit_id: unitId, service_type: 'electricity', period_from: '2026-10-01', period_to: '2026-12-31', amount: est + 500 });
+  const docC = billingDocument(cId);
+  assert.equal(docC.adjustments.length, 1);
+  assert.equal(docC.adjustments[0].kind, 'trueup');
+  assert.equal(docC.adjustments[0].amount, -500); // nájemník doplatí 500 Kč
+  assert.equal(docC.totals.adjustments, -500);
+  assert.equal(docC.totals.balance, docC.totals.advances - 500);
+
+  // po uzavření C už se doúčtování znovu nenabízí
+  finalizeBilling(getBilling(cId), { settlement: 'paid' });
+  const dId = insert('billings', COLS.billings, { tenant_id: tenantId, period_from: '2028-01-01', period_to: '2028-12-31' });
+  assert.equal(billingDocument(dId).adjustments.length, 0);
+});

@@ -1,7 +1,7 @@
 import { html, useState } from '/vendor/preact-htm.js';
 import { get, post, put, del, uploadFile } from '../api.js';
 import { Link, useLoad, Loading, Field, TextInput, NumInput, DateInput, Select, useForm, run, confirmDelete, toast } from '../ui.js';
-import { SERVICE_TYPES, fmtMoney, fmtPeriod, fmtNum } from '../calc.js';
+import { SERVICE_TYPES, fmtMoney, fmtPeriod, fmtNum, fmtDate } from '../calc.js';
 
 const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} kB`);
 
@@ -58,12 +58,77 @@ function InvoiceForm({ initial, units, onSaved, onCancel }) {
   </form>`;
 }
 
+function TariffForm({ initial, units, onSaved, onCancel }) {
+  const [f, , set] = useForm(initial);
+  const save = async (e) => {
+    e.preventDefault();
+    await run(() => (f.id ? put(`/tariffs/${f.id}`, f) : post('/tariffs', f)), 'Ceník uložen');
+    onSaved();
+  };
+  const elec = f.service_type === 'electricity' || f.service_type === 'common_electricity';
+  return html`<form class="grid" onSubmit=${save}>
+    <${Field} label="Byt *"><${Select} value=${f.unit_id} onChange=${(v) => set('unit_id')(v && +v)} empty="— vyber —" required disabled=${!!f.id}
+      options=${units.map((u) => [u.id, u.address])} /></${Field}>
+    <${Field} label="Služba *"><${Select} value=${f.service_type} onChange=${set('service_type')} options=${SERVICE_TYPES} required /></${Field}>
+    <${Field} label="Název" hint="např. „ČEZ – smlouva 2026“"><${TextInput} value=${f.name} onChange=${set('name')} /></${Field}>
+    <${Field} label="Platnost od"><${DateInput} value=${f.valid_from} onChange=${set('valid_from')} /></${Field}>
+    <${Field} label="Platnost do" hint="prázdné = dosud"><${DateInput} value=${f.valid_to} onChange=${set('valid_to')} /></${Field}>
+    <${Field} label="Cena za jednotku (Kč)" hint="vč. DPH, distribuce a poplatků, např. Kč/kWh nebo Kč/m³">
+      <${NumInput} value=${f.price_per_unit} onChange=${set('price_per_unit')} /></${Field}>
+    ${elec ? html`
+      <${Field} label="Cena VT (Kč/kWh)" hint="jen u dvoutarifu"><${NumInput} value=${f.price_vt} onChange=${set('price_vt')} /></${Field}>
+      <${Field} label="Cena NT (Kč/kWh)" hint="jen u dvoutarifu"><${NumInput} value=${f.price_nt} onChange=${set('price_nt')} /></${Field}>` : null}
+    <${Field} label="Stálý plat (Kč/měsíc)" hint="jistič, stálé platby…"><${NumInput} value=${f.fixed_monthly} onChange=${set('fixed_monthly')} /></${Field}>
+    <${Field} label="Poznámka" wide><${TextInput} value=${f.note} onChange=${set('note')} /></${Field}>
+    <div class="actions wide"><button class="btn primary">Uložit</button>
+      <button type="button" class="btn" onClick=${onCancel}>Zrušit</button></div>
+  </form>`;
+}
+
+function Tariffs({ unit, units }) {
+  const state = useLoad(() => get('/tariffs'));
+  const [editing, setEditing] = useState(null);
+  const done = () => { setEditing(null); state.reload(); };
+  return html`<div class="page-head"><h2>Ceníky (smluvní ceny pro odhad)</h2>
+      ${!editing ? html`<button class="btn" onClick=${() => setEditing('new')}>+ Nový ceník</button>` : null}</div>
+    <p class="muted">Když za část období vyúčtování ještě nemáš fakturu, aplikace náklady odhadne: spotřeba × cena + stálý plat.
+      Po doplnění skutečné faktury se rozdíl sám doúčtuje v dalším vyúčtování.</p>
+    ${editing ? html`<div class="card"><${TariffForm} key=${editing === 'new' ? 'new' : editing.id} units=${units}
+      initial=${editing === 'new' ? { unit_id: unit || (units.length === 1 ? units[0].id : null), service_type: 'electricity' } : editing}
+      onSaved=${done} onCancel=${() => setEditing(null)} /></div>` : null}
+    <${Loading} state=${state}>${(list) => {
+      const rows = list.filter((t) => !unit || t.unit_id === unit);
+      const remove = async (t) => {
+        if (!confirmDelete(`ceník ${t.name || ''}`)) return;
+        await run(() => del(`/tariffs/${t.id}`), 'Ceník smazán');
+        state.reload();
+      };
+      const price = (t) => [
+        t.price_per_unit ? `${fmtNum(t.price_per_unit, 2)} Kč/j.` : null,
+        t.price_vt ? `VT ${fmtNum(t.price_vt, 2)}` : null,
+        t.price_nt ? `NT ${fmtNum(t.price_nt, 2)}` : null,
+      ].filter(Boolean).join(' · ') || '—';
+      return rows.length
+        ? html`<div class="card"><table class="list">
+            <thead><tr><th>Služba</th><th>Název</th><th>Platnost</th><th class="r">Cena</th><th class="r">Stálý plat</th>${units.length > 1 ? html`<th>Byt</th>` : null}<th></th></tr></thead>
+            <tbody>${rows.map((t) => html`<tr key=${t.id}>
+              <td>${SERVICE_TYPES[t.service_type] || t.service_type}</td><td>${t.name || '—'}</td>
+              <td class="nowrap">${t.valid_from || t.valid_to ? `${t.valid_from ? fmtDate(t.valid_from) : '…'} – ${t.valid_to ? fmtDate(t.valid_to) : 'dosud'}` : 'bez omezení'}</td>
+              <td class="r nowrap">${price(t)}</td><td class="r nowrap">${t.fixed_monthly ? fmtMoney(t.fixed_monthly) : '—'}</td>
+              ${units.length > 1 ? html`<td>${t.unit_address}</td>` : null}
+              <td class="r nowrap"><button class="btn link" onClick=${() => setEditing(t)}>upravit</button>
+                <button class="btn link danger" onClick=${() => remove(t)}>smazat</button></td></tr>`)}</tbody>
+          </table></div>`
+        : html`<div class="empty card">Zatím žádný ceník.</div>`;
+    }}</${Loading}>`;
+}
+
 export function InvoicesPage({ unitId }) {
   const [unit, setUnit] = useState(unitId ? +unitId : null);
   const [editing, setEditing] = useState(null); // null | 'new' | invoice
   const state = useLoad(() => Promise.all([get('/invoices'), get('/units')]));
 
-  return html`<div class="page-head"><h1>Faktury dodavatelů</h1>
+  return html`<div class="page-head"><h1>Faktury a ceníky</h1>
       ${!editing ? html`<button class="btn primary" onClick=${() => setEditing('new')}>+ Nová faktura</button>` : null}</div>
     <p class="muted">Faktury (vyúčtování) od ČEZ, plynárny, vodárny… Ve vyúčtování nájemníka si je položka se zaškrtnutým
       „Částka z faktur“ sama načte – z faktury, která přesahuje období, se započte jen poměrná část podle dnů.</p>
@@ -97,6 +162,7 @@ export function InvoicesPage({ unitId }) {
                 <td class="r nowrap"><button class="btn link" onClick=${() => setEditing(i)}>upravit</button>
                   <button class="btn link danger" onClick=${() => remove(i)}>smazat</button></td></tr>`)}</tbody>
             </table></div>`
-          : html`<div class="empty card">Zatím žádná faktura.</div>`}`;
+          : html`<div class="empty card">Zatím žádná faktura.</div>`}
+        <${Tariffs} unit=${unit} units=${units} />`;
     }}</${Loading}>`;
 }

@@ -1,7 +1,7 @@
 import { html, useEffect } from '/vendor/preact-htm.js';
 import { get } from '../api.js';
 import { useLoad, Loading } from '../ui.js';
-import { fmtMoney, fmtDate, fmtNum, fmtPeriod } from '../calc.js';
+import { fmtMoney, fmtDate, fmtNum, fmtPeriod, describeEstimate } from '../calc.js';
 
 function MeterValue({ r, dual, unit }) {
   return html`${fmtNum(r.value)} ${unit}${dual ? html`<br /><small>VT ${fmtNum(r.value_vt)} | NT ${fmtNum(r.value_nt)}</small>` : null}`;
@@ -20,6 +20,8 @@ export function BillingPrint({ id }) {
   return html`<${Loading} state=${state}>${([doc, settings]) => {
     const b = doc.billing;
     const t = doc.totals;
+    let sec = 1;
+    const n = () => sec++;
     const today = fmtDate(new Date().toISOString().slice(0, 10));
     return html`
       <div class="print-toolbar no-print">
@@ -35,7 +37,7 @@ export function BillingPrint({ id }) {
         </header>
 
         <section>
-          <h2>1. Smluvní strany</h2>
+          <h2>${n()}. Smluvní strany</h2>
           <dl class="parties">
             <dt>Pronajímatel:</dt><dd>${b.landlord_name}</dd>
             <dt>Adresa:</dt><dd>${b.landlord_address}</dd>
@@ -48,7 +50,7 @@ export function BillingPrint({ id }) {
         </section>
 
         ${doc.meters.length ? html`<section>
-          <h2>2. Stavy měřidel</h2>
+          <h2>${n()}. Stavy měřidel</h2>
           <table class="doc-table">
             <thead><tr><th>Měřidlo</th><th>Odečet</th><th>Datum</th><th class="r">Stav</th><th class="r">Spotřeba</th></tr></thead>
             ${doc.meters.map((m) => html`<tbody class="keep">${m.rows.map((r, i) => html`<tr>
@@ -60,12 +62,12 @@ export function BillingPrint({ id }) {
         </section>` : null}
 
         <section>
-          <h2>${doc.meters.length ? 3 : 2}. Rozúčtování nákladů na služby</h2>
+          <h2>${n()}. Rozúčtování nákladů na služby</h2>
           <table class="doc-table">
             <thead><tr><th>#</th><th>Služba</th><th>Období</th><th class="r">Celk. náklad</th><th>Rozúčtování</th><th class="r">Podíl nájemníka</th></tr></thead>
             <tbody>${doc.items.map((it) => html`<tr class="keep">
               <td>${it.position}</td>
-              <td>${it.name}${it.detail ? html`<br /><small>${it.detail}</small>` : null}${it.invoices?.length ? it.invoices.map((x) => html`<br /><small>Faktura ${x.supplier || ''}${x.number ? ` č. ${x.number}` : ''} za ${fmtPeriod(x.period_from, x.period_to)}: ${fmtMoney(x.amount)}${x.ratio < 1 ? ` → poměrně ${x.overlap}/${x.days} dní = ${fmtMoney(x.portion)}` : ''}</small>`) : null}${it.note ? html`<br /><small>${it.note}</small>` : null}</td>
+              <td>${it.name}${it.detail ? html`<br /><small>${it.detail}</small>` : null}${it.invoices?.length ? it.invoices.map((x) => html`<br /><small>Faktura ${x.supplier || ''}${x.number ? ` č. ${x.number}` : ''} za ${fmtPeriod(x.period_from, x.period_to)}: ${fmtMoney(x.amount)}${x.ratio < 1 ? ` → poměrně ${x.overlap}/${x.days} dní = ${fmtMoney(x.portion)}` : ''}</small>`) : null}${(it.estimate || []).filter((p) => !p.missing).map((p) => html`<br /><small class="est-print">* ${describeEstimate(p, it.unit)}</small>`)}${it.note ? html`<br /><small>${it.note}</small>` : null}</td>
               <td>${fmtPeriod(it.period_from, it.period_to)}</td>
               <td class="r nowrap">${fmtMoney(it.total_cost)}</td>
               <td>${it.distribution_label}${it.distribution === 'area' ? html`<br /><small>${fmtNum(b.unit_area, 2)} / ${fmtNum(b.total_area, 2)} m²</small>`
@@ -75,10 +77,13 @@ export function BillingPrint({ id }) {
               <td class="r nowrap">${fmtMoney(it.share)}</td></tr>`)}</tbody>
             <tfoot><tr><td colspan="5" class="r">Celkem náklady nájemníka:</td><td class="r nowrap"><b>${fmtMoney(t.costs)}</b></td></tr></tfoot>
           </table>
+          ${t.estimated ? html`<p class="small">* Část nákladů (podíl nájemníka ${fmtMoney(t.estimated)}) je za období, za které pronajímatel dosud neobdržel
+            vyúčtování dodavatele, a je stanovena odhadem podle smluvních cen. Rozdíl oproti skutečnému vyúčtování dodavatele
+            bude zohledněn v příštím vyúčtování.</p>` : null}
         </section>
 
         <section class="keep">
-          <h2>${doc.meters.length ? 4 : 3}. Přehled zaplacených záloh</h2>
+          <h2>${n()}. Přehled zaplacených záloh</h2>
           <p class="small">Nájemní měsíc počítán od ${b.anniversary_day}. dne v měsíci (den výročí nájmu). Neúplné měsíce poměrnou částí.</p>
           <table class="doc-table">
             <thead><tr><th>Druh</th><th class="r">Měsíčně</th><th>Od</th><th>Do</th><th class="r">Měsíců</th><th class="r">Celkem</th></tr></thead>
@@ -90,15 +95,27 @@ export function BillingPrint({ id }) {
           </table>
         </section>
 
+        ${doc.adjustments?.length ? html`<section class="keep">
+          <h2>${n()}. Převody a doúčtování z předchozích období</h2>
+          <table class="doc-table">
+            <thead><tr><th>Položka</th><th class="r">Částka</th></tr></thead>
+            <tbody>${doc.adjustments.map((a) => html`<tr><td>${a.label}</td><td class="r nowrap">${a.amount > 0 ? '+' : ''}${fmtMoney(a.amount)}</td></tr>`)}</tbody>
+            <tfoot><tr><td class="r">Celkem (+ ve prospěch nájemníka, − k úhradě nájemníkem):</td><td class="r nowrap"><b>${t.adjustments > 0 ? '+' : ''}${fmtMoney(t.adjustments)}</b></td></tr></tfoot>
+          </table>
+        </section>` : null}
+
         <section class="keep">
-          <h2>${doc.meters.length ? 5 : 4}. Výsledek vyúčtování</h2>
+          <h2>${n()}. Výsledek vyúčtování</h2>
           <dl class="totals">
             <dt>Celkové náklady na služby:</dt><dd>${fmtMoney(t.costs)}</dd>
             <dt>Celkové zaplacené zálohy:</dt><dd>${fmtMoney(t.advances)}</dd>
+            ${t.adjustments ? html`<dt>Převody a doúčtování z předchozích období:</dt><dd>${t.adjustments > 0 ? '+' : ''}${fmtMoney(t.adjustments)}</dd>` : null}
           </dl>
           <p class="final-result">${t.balance > 0 ? html`Přeplatek: ${fmtMoney(t.balance)} <span>(vrátit nájemníkovi)</span>`
             : t.balance < 0 ? html`Nedoplatek: ${fmtMoney(-t.balance)} <span>(doplatí nájemník)</span>` : 'Vyrovnáno – bez přeplatku i nedoplatku'}</p>
-          ${t.balance < 0 && settings.bank_account ? html`<p>Nedoplatek prosím uhraďte na účet <b>${settings.bank_account}</b>.</p>` : null}
+          ${doc.settlement === 'carry' && t.balance ? html`<p>${t.balance > 0 ? 'Přeplatek' : 'Nedoplatek'} bude převeden do příštího vyúčtování.</p>`
+            : doc.settlement === 'paid' && t.balance ? html`<p>${t.balance > 0 ? 'Přeplatek byl vyplacen' : 'Nedoplatek byl uhrazen'}${doc.settled_at ? ` dne ${fmtDate(doc.settled_at)}` : ''}.</p>` : null}
+          ${t.balance < 0 && doc.settlement !== 'carry' && doc.settlement !== 'paid' && settings.bank_account ? html`<p>Nedoplatek prosím uhraďte na účet <b>${settings.bank_account}</b>.</p>` : null}
           ${b.note ? html`<p>${b.note}</p>` : null}
           <p class="small">Dle § 7 odst. 3 zák. č. 67/2013 Sb. je finanční vyrovnání splatné nejpozději do 4 měsíců ode dne doručení vyúčtování příjemci služeb.</p>
         </section>

@@ -3,7 +3,7 @@ import { get, post, put, del } from '../api.js';
 import { Link, useLoad, Loading, Field, TextInput, NumInput, DateInput, Select, useForm, run, navigate, confirmDelete, toast, downloadJson } from '../ui.js';
 import {
   computeBilling, SERVICE_TYPES, DISTRIBUTIONS, READING_TYPES, METER_TYPES, fmtMoney, fmtDate, fmtNum, fmtPeriod,
-  meterLabel, meterUnit, isoDate, parseDate,
+  meterLabel, meterUnit, isoDate, parseDate, describeEstimate, SETTLEMENTS,
 } from '../calc.js';
 
 const METER_TO_SERVICE = { cold_water: 'cold_water', hot_water: 'hot_water', gas: 'gas', electricity: 'electricity', electricity_dual: 'electricity', heat: 'heating' };
@@ -15,6 +15,8 @@ function ResultBadge({ totals }) {
   if (b < 0) return html`<span class="result under">nedoplatek ${fmtMoney(-b)}</span>`;
   return html`<span class="result">vyrovnáno</span>`;
 }
+
+const SETTLEMENT_SHORT = { carry: 'převedeno do dalšího', paid: 'vyrovnáno', open: 'neuhrazeno' };
 
 // ---------- přehled ----------
 export function BillingsPage() {
@@ -30,7 +32,8 @@ export function BillingsPage() {
               <td>${b.tenant_name}</td><td>${b.unit_address}</td>
               <td class="r nowrap">${fmtMoney(b.totals.costs)}</td><td class="r nowrap">${fmtMoney(b.totals.advances)}</td>
               <td><${ResultBadge} totals=${b.totals} /></td>
-              <td><span class=${'badge ' + b.status}>${b.status === 'final' ? 'uzavřeno' : 'rozpracováno'}</span></td></tr>`)}</tbody>
+              <td><span class=${'badge ' + b.status}>${b.status === 'final' ? 'uzavřeno' : 'rozpracováno'}</span>
+                ${b.status === 'final' && b.settlement ? html`<br /><small class="muted">${SETTLEMENT_SHORT[b.settlement]}</small>` : null}</td></tr>`)}</tbody>
           </table></div>`
         : html`<div class="empty card">
             <p>Zatím žádné vyúčtování.</p>
@@ -145,7 +148,7 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
         ${item.cost_from_invoices ? html`<input class="num" value=${fmtNum(computed?.total_cost, 2)} disabled />`
           : html`<${NumInput} value=${item.total_cost} onChange=${set('total_cost')} />`}
         <label class="check inline"><input type="checkbox" checked=${!!item.cost_from_invoices}
-          onChange=${(e) => onChange({ ...item, cost_from_invoices: e.target.checked ? 1 : 0, total_cost: e.target.checked ? item.total_cost : computed?.total_cost ?? item.total_cost })} /> Částka z faktur</label>
+          onChange=${(e) => onChange({ ...item, cost_from_invoices: e.target.checked ? 1 : 0, total_cost: e.target.checked ? item.total_cost : computed?.total_cost ?? item.total_cost })} /> Z faktur (+ odhad dle ceníku)</label>
       </${Field}>
       <${Field} label="Rozúčtování"><${Select} value=${item.distribution} onChange=${set('distribution')} options=${DISTRIBUTIONS} /></${Field}>
 
@@ -164,15 +167,23 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
       ${!readOnly && computed?.total_cost > 0 && !computed?.share ? html`<p class="warn wide">Podíl nájemníka vychází 0 Kč – zkontroluj spotřebu / rozúčtování.</p>` : null}
 
       ${item.cost_from_invoices ? html`<div class="wide invoice-list">
-        ${computed?.invoices?.length
-          ? html`<table class="list compact"><tbody>${computed.invoices.map((x) => html`<tr key=${x.id}>
+        ${computed?.invoices?.length || computed?.estimate?.length
+          ? html`<table class="list compact"><tbody>${(computed.invoices || []).map((x) => html`<tr key=${x.id}>
               <td>${x.supplier || 'Faktura'}${x.number ? ` č. ${x.number}` : ''}${x.files?.map((f) => html` · <a href=${`/api/files/${f.id}`} target="_blank" rel="noopener" title=${f.name}>${f.mime === 'application/pdf' ? 'PDF' : 'příloha'}</a>`)}</td>
               <td class="nowrap">${fmtPeriod(x.period_from, x.period_to)}</td>
               <td class="r nowrap">${fmtMoney(x.amount)}</td>
               <td class="r nowrap muted">${x.ratio < 1 ? `${x.overlap}/${x.days} dní` : 'celá'}</td>
-              <td class="r nowrap"><b>${fmtMoney(x.portion)}</b></td></tr>`)}</tbody></table>`
+              <td class="r nowrap"><b>${fmtMoney(x.portion)}</b></td></tr>`)}
+            ${(computed.estimate || []).map((p) => html`<tr key=${p.from} class=${p.missing ? 'est missing' : 'est'}>
+              <td colspan="4">${p.missing
+                ? html`<span class="warn-text">${fmtPeriod(p.from, p.to)}: chybí faktura i ceník → 0 Kč.</span> <${Link} href="/faktury">Přidat ceník</${Link}>`
+                : html`<span class="est-tag">odhad</span> ${describeEstimate(p, computed.unit)}`}</td>
+              <td class="r nowrap"><b>${fmtMoney(p.amount)}</b></td></tr>`)}</tbody></table>
+            ${computed.estimated ? html`<p class="muted small-note">Odhad se po doplnění skutečné faktury doúčtuje v dalším vyúčtování.</p>` : null}`
           : html`<p class="warn">Žádná faktura služby „${SERVICE_TYPES[item.type_id]}“ v období ${fmtPeriod(computed?.period_from, computed?.period_to)}. <${Link} href="/faktury">Přidat fakturu</${Link}></p>`}
       </div>` : null}
+      ${item.cost_from_invoices && item.distribution !== 'meter' && computed?.estimate?.length ? html`<${Field} label="Celková spotřeba (pro odhad)" hint="za celé období položky">
+        <${NumInput} value=${item.total_consumption} onChange=${set('total_consumption')} /></${Field}>` : null}
       ${item.distribution === 'area' ? html`<p class="muted wide">Podíl ${fmtNum(billing.unit_area, 2)} / ${fmtNum(billing.total_area, 2)} m² (nastavuje se v hlavičce vyúčtování).</p>` : null}
       ${item.distribution === 'persons' ? html`<p class="muted wide">Podíl ${billing.person_count || 0} / ${billing.total_persons || 0} osob (nastavuje se v hlavičce vyúčtování).</p>` : null}
       ${item.distribution === 'units' ? html`<${Field} label="Počet dílů (jednotek)"><${NumInput} value=${item.total_units} onChange=${set('total_units')} /></${Field}>` : null}
@@ -187,13 +198,41 @@ function ItemEditor({ item, idx, count, meters, billing, computed, onChange, onR
   </div>`;
 }
 
+function SettlementDialog({ totals, initial, onConfirm, onCancel }) {
+  const bal = totals.balance;
+  const [st, setSt] = useState(initial?.settlement || (Math.abs(bal) < 0.01 ? 'paid' : 'carry'));
+  const [note, setNote] = useState(initial?.settlement_note || '');
+  const [date, setDate] = useState(initial?.settled_at || isoDate(Date.now()));
+  const what = bal > 0 ? `přeplatek ${fmtMoney(bal)} (patří nájemníkovi)` : bal < 0 ? `nedoplatek ${fmtMoney(-bal)} (doplatí nájemník)` : 'vyrovnáno';
+  const opts = {
+    carry: bal >= 0 ? 'Převést přeplatek do dalšího vyúčtování' : 'Převést nedoplatek do dalšího vyúčtování',
+    paid: bal > 0 ? 'Vyplaceno nájemníkovi' : bal < 0 ? 'Nájemník uhradil' : 'Vyrovnáno',
+    open: 'Zatím neuhrazeno (rozhodnu později)',
+  };
+  return html`<div class="modal-bg" onClick=${(e) => e.target === e.currentTarget && onCancel()}>
+    <div class="modal card">
+      <h2>${initial ? 'Vypořádání výsledku' : 'Uzavřít vyúčtování'}</h2>
+      <p>Výsledek: <b>${what}</b></p>
+      ${!initial ? html`<p class="muted">Po uzavření se výsledek zafixuje – pozdější změny odečtů, záloh a faktur ho neovlivní
+        (rozdíly ze skutečných faktur se doúčtují v dalším vyúčtování).</p>` : null}
+      <div class="radios">${Object.entries(opts).map(([k, l]) => html`<label class="check" key=${k}>
+        <input type="radio" name="st" checked=${st === k} onChange=${() => setSt(k)} /> ${l}</label>`)}</div>
+      ${st === 'paid' ? html`<${Field} label="Datum vyrovnání"><${DateInput} value=${date} onChange=${setDate} /></${Field}>` : null}
+      ${st === 'carry' ? html`<p class="muted">Částka se objeví jako samostatný řádek v nejbližším dalším vyúčtování tohoto nájemníka.</p>` : null}
+      <${Field} label="Poznámka" hint="nepovinné, např. „převodem na účet“"><${TextInput} value=${note} onChange=${setNote} /></${Field}>
+      <div class="actions"><button class="btn primary" onClick=${() => onConfirm({ settlement: st, settlement_note: note, settled_at: st === 'paid' ? date : null })}>
+        ${initial ? 'Uložit' : 'Uzavřít vyúčtování'}</button>
+        <button class="btn" onClick=${onCancel}>Zrušit</button></div>
+    </div></div>`;
+}
+
 export function BillingEditor({ id }) {
   const state = useLoad(() => get(`/billings/${id}`), [id]);
-  return html`<${Loading} state=${state}>${(data) => html`<${Editor} data=${data} reload=${state.reload} />`}</${Loading}>`;
+  return html`<${Loading} state=${state}>${(data) => html`<${Editor} key=${`${data.status}|${data.updated_at}|${data.settlement}`} data=${data} reload=${state.reload} />`}</${Loading}>`;
 }
 
 function Editor({ data, reload }) {
-  const { items: initialItems, meters, advances, invoices, ...initialBilling } = data;
+  const { items: initialItems, meters, advances, invoices, tariffs, adjustments, trueup_pending: trueupPending, used_in: usedIn, document: finalDoc, ...initialBilling } = data;
   const [b, setB] = useState(initialBilling);
   const [items, setItems] = useState(initialItems);
   const [dirty, setDirty] = useState(false);
@@ -206,7 +245,9 @@ function Editor({ data, reload }) {
     return () => window.removeEventListener('beforeunload', h);
   }, [dirty]);
 
-  const doc = useMemo(() => computeBilling({ billing: b, items, meters, advances, invoices }), [b, items, meters, advances, invoices]);
+  const [showFinalize, setShowFinalize] = useState(false);
+  const liveDoc = useMemo(() => computeBilling({ billing: b, items, meters, advances, invoices, tariffs, adjustments }), [b, items, meters, advances, invoices, tariffs, adjustments]);
+  const doc = readOnly && finalDoc ? finalDoc : liveDoc;
   const setField = (k) => (v) => { setB((x) => ({ ...x, [k]: v })); setDirty(true); };
   const updItems = (fn) => { setItems(fn); setDirty(true); };
 
@@ -219,14 +260,19 @@ function Editor({ data, reload }) {
       setSaving(false);
     }
   };
-  const action = async (path, msg) => {
+  const action = async (path, msg, body) => {
     if (dirty) await save();
-    const r = await run(() => post(`/billings/${b.id}/${path}`), msg);
+    const r = await run(() => post(`/billings/${b.id}/${path}`, body), msg);
     return r;
   };
-  const finalize = async () => {
-    if (!confirm('Uzavřít vyúčtování? Výsledek se zafixuje (pozdější změny odečtů a záloh ho už neovlivní).')) return;
-    await action('finalize', 'Vyúčtování uzavřeno');
+  const finalize = async (st) => {
+    await action('finalize', 'Vyúčtování uzavřeno', st);
+    setShowFinalize(false);
+    reload();
+  };
+  const changeSettlement = async (st) => {
+    await run(() => put(`/billings/${b.id}/settlement`, st), 'Vypořádání uloženo');
+    setShowFinalize(false);
     reload();
   };
   const reopen = async () => { await action('reopen', 'Vyúčtování znovu otevřeno'); reload(); };
@@ -257,7 +303,7 @@ function Editor({ data, reload }) {
       <div class="actions">
         ${!readOnly ? html`<button class="btn primary" disabled=${saving || !dirty} onClick=${save}>${dirty ? 'Uložit' : 'Uloženo'}</button>` : null}
         <button class="btn" onClick=${print}>Tisk / PDF</button>
-        ${readOnly ? html`<button class="btn" onClick=${reopen}>Znovu otevřít</button>` : html`<button class="btn" onClick=${finalize}>Uzavřít</button>`}
+        ${readOnly ? html`<button class="btn" onClick=${reopen}>Znovu otevřít</button>` : html`<button class="btn" onClick=${() => setShowFinalize(true)}>Uzavřít…</button>`}
         <details class="menu"><summary class="btn">Další…</summary><div class="menu-list">
           <button class="btn link" onClick=${duplicate}>Vytvořit další období</button>
           <button class="btn link" onClick=${exportJson}>Export JSON</button>
@@ -266,13 +312,34 @@ function Editor({ data, reload }) {
       </div>
     </div>
 
-    ${readOnly ? html`<div class="alert">Vyúčtování je uzavřené – pro úpravy ho znovu otevři. Tisk používá zafixovaný stav z ${b.finalized_at || 'uzavření'}.</div>` : null}
+    ${showFinalize ? html`<${SettlementDialog} totals=${t} initial=${readOnly ? b : null}
+        onConfirm=${readOnly ? changeSettlement : finalize} onCancel=${() => setShowFinalize(false)} />` : null}
+
+    ${readOnly ? html`<div class="alert">
+        Vyúčtování je uzavřené (${b.finalized_at || ''}) – výsledek je zafixovaný, pro úpravy ho znovu otevři.
+        <div class="settlement-line"><b>Vypořádání:</b> ${SETTLEMENTS[b.settlement] || 'neurčeno'}${b.settled_at ? ` (${fmtDate(b.settled_at)})` : ''}${b.settlement_note ? ` – ${b.settlement_note}` : ''}
+          <button class="btn link" onClick=${() => setShowFinalize(true)}>změnit</button></div>
+        ${usedIn?.length ? html`<div class="muted">Převod / doúčtování převzalo vyúčtování ${usedIn.map((u, i) => html`${i ? ', ' : ''}<${Link} href=${`/vyuctovani/${u.id}`}>${fmtPeriod(u.period_from, u.period_to)}</${Link}>`)}.</div>` : null}
+      </div>` : null}
+    ${readOnly && Math.abs(trueupPending) >= 0.01 ? html`<div class="alert warn-box">
+        Skutečné faktury dodavatelů se liší od odhadu v tomto vyúčtování o <b>${fmtMoney(Math.abs(trueupPending))}</b>
+        ${trueupPending < 0 ? '(nájemník doplatí)' : '(ve prospěch nájemníka)'} – automaticky se doúčtuje v dalším vyúčtování.</div>` : null}
 
     <div class="summary card">
-      <div><span class="muted">Náklady nájemníka</span><b>${fmtMoney(t.costs)}</b></div>
-      <div><span class="muted">Zaplacené zálohy</span><b>${fmtMoney(t.advances)}</b></div>
+      <div><span class="muted">Náklady nájemníka</span><b>${fmtMoney(t.costs)}</b>
+        ${t.estimated ? html`<small class="muted">z toho odhad ${fmtMoney(t.estimated)}</small>` : null}</div>
+      <div><span class="muted">Zaplacené zálohy</span><b>${fmtMoney(t.advances)}</b>
+        ${t.adjustments ? html`<small class="muted">převody / doúčtování ${t.adjustments > 0 ? '+' : ''}${fmtMoney(t.adjustments)}</small>` : null}</div>
       <div><span class="muted">Výsledek</span><${ResultBadge} totals=${t} /></div>
     </div>
+
+    ${doc.adjustments?.length ? html`<div class="card">
+      <h2>Převody a doúčtování z předchozích období</h2>
+      <table class="list"><tbody>${doc.adjustments.map((a) => html`<tr key=${a.kind + a.source_billing_id}>
+        <td>${a.source_billing_id ? html`<${Link} href=${`/vyuctovani/${a.source_billing_id}`}>${a.label}</${Link}>` : a.label}</td>
+        <td class="r nowrap"><b class=${a.amount > 0 ? 'result over' : 'result under'}>${a.amount > 0 ? '+' : ''}${fmtMoney(a.amount)}</b></td></tr>`)}</tbody></table>
+      <p class="muted">Kladná částka je ve prospěch nájemníka. ${readOnly ? '' : 'Převezme se při uzavření tohoto vyúčtování.'}</p>
+    </div>` : null}
 
     <div class="card">
       <h2>Hlavička</h2>

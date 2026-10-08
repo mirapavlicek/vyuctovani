@@ -185,10 +185,93 @@ export function invoicesForItem(invoices, typeId, from, to) {
     .filter((x) => x.overlap > 0);
 }
 
+// ---------- odhad podle ceníku ----------
+const nextDay = (d) => isoDate(parseDate(d) + DAY);
+const prevDay = (d) => isoDate(parseDate(d) - DAY);
+
+/** Části období [from, to], které nepokrývá žádná z faktur. */
+export function uncoveredIntervals(from, to, invoices) {
+  const covered = (invoices || [])
+    .map((x) => ({ from: maxDate(x.period_from, from), to: minDate(x.period_to, to) }))
+    .filter((x) => x.from <= x.to)
+    .sort((a, b) => (a.from < b.from ? -1 : 1));
+  const out = [];
+  let cursor = from;
+  for (const c of covered) {
+    if (c.from > cursor) out.push({ from: cursor, to: prevDay(c.from) });
+    if (c.to >= cursor) cursor = nextDay(c.to);
+    if (cursor > to) break;
+  }
+  if (cursor <= to) out.push({ from: cursor, to });
+  return out;
+}
+
+/**
+ * Odhad nákladů za nepokryté dny podle ceníku. Spotřeba se do intervalů dělí poměrně podle dnů.
+ * cons = { total, vt, nt } za celé období položky [itemFrom, itemTo].
+ */
+export function estimateCost(tariffs, typeId, intervals, itemFrom, itemTo, cons) {
+  const list = (tariffs || []).filter((t) => t.service_type === typeId)
+    .sort((a, b) => ((a.valid_from || '') < (b.valid_from || '') ? -1 : 1));
+  const totalDays = daysIncl(itemFrom, itemTo);
+  const parts = [];
+  for (const iv of intervals) {
+    let cursor = iv.from;
+    for (let guard = 0; cursor <= iv.to && guard < 1000; guard++) {
+      const active = list.filter((t) => (!t.valid_from || t.valid_from <= cursor) && (!t.valid_to || t.valid_to >= cursor)).pop();
+      if (!active) {
+        const next = list.find((t) => t.valid_from && t.valid_from > cursor);
+        const end = minDate(iv.to, next ? prevDay(next.valid_from) : iv.to);
+        parts.push({ from: cursor, to: end, days: daysIncl(cursor, end), missing: true, amount: 0 });
+        cursor = nextDay(end);
+        continue;
+      }
+      const later = list.find((t) => t.valid_from && t.valid_from > cursor && (!active.valid_to || t.valid_from <= active.valid_to));
+      const end = minDate(minDate(iv.to, active.valid_to || iv.to), later ? prevDay(later.valid_from) : iv.to);
+      const days = daysIncl(cursor, end);
+      const share = totalDays > 0 ? days / totalDays : 0;
+      const dualPrice = num(active.price_vt) > 0 || num(active.price_nt) > 0;
+      const useDual = dualPrice && cons.vt !== null && cons.vt !== undefined;
+      const consumption = round3(num(cons.total) * share);
+      const consCost = useDual
+        ? num(cons.vt) * share * num(active.price_vt) + num(cons.nt) * share * num(active.price_nt)
+        : consumption * num(active.price_per_unit);
+      const months = num(active.fixed_monthly) ? rentalMonths(cursor, end, 1).months : 0;
+      const fixed = num(active.fixed_monthly) * months;
+      parts.push({
+        from: cursor, to: end, days, tariff_id: active.id, tariff_name: active.name || 'Ceník',
+        consumption, vt: useDual ? round3(num(cons.vt) * share) : null, nt: useDual ? round3(num(cons.nt) * share) : null,
+        price_per_unit: useDual ? null : num(active.price_per_unit), price_vt: useDual ? num(active.price_vt) : null,
+        price_nt: useDual ? num(active.price_nt) : null, fixed_monthly: num(active.fixed_monthly), months: Math.round(months * 100) / 100,
+        amount: round2(consCost + fixed),
+      });
+      cursor = nextDay(end);
+    }
+  }
+  return parts;
+}
+
+export function describeEstimate(p, unit = '') {
+  if (p.missing) return `${fmtPeriod(p.from, p.to)}: chybí faktura i ceník – počítáno 0 Kč`;
+  const cons = p.vt !== null && p.vt !== undefined
+    ? `VT ${fmtNum(p.vt)} × ${fmtNum(p.price_vt, 2)} + NT ${fmtNum(p.nt)} × ${fmtNum(p.price_nt, 2)} Kč`
+    : `${fmtNum(p.consumption)} ${unit} × ${fmtNum(p.price_per_unit, 2)} Kč`.replace('  ', ' ');
+  const fixed = p.fixed_monthly ? ` + stálý plat ${fmtNum(p.months, 2)} měs. × ${fmtNum(p.fixed_monthly, 2)} Kč` : '';
+  return `${fmtPeriod(p.from, p.to)} odhad dle ceníku „${p.tariff_name}“: ${cons}${fixed} = ${fmtMoney(p.amount)}`;
+}
+
+export const SETTLEMENTS = {
+  carry: 'Převést do dalšího vyúčtování',
+  paid: 'Vyrovnáno (vyplaceno / uhrazeno)',
+  open: 'Zatím neuhrazeno',
+};
+
 // ---------- hlavní výpočet ----------
 /**
- * input = { billing, items, meters, advances }
+ * input = { billing, items, meters, advances, invoices, tariffs, adjustments }
  *  - items[i].meter_id / reading_from_id / reading_to_id odkazují do meters[].readings[]
+ *  - položka s cost_from_invoices: částka = poměrné části faktur + odhad dle ceníku za dny bez faktury
+ *  - adjustments = převody / doúčtování z předchozích období (+ ve prospěch nájemníka)
  */
 export function computeBilling(input) {
   const b = input.billing || {};
@@ -203,12 +286,6 @@ export function computeBilling(input) {
   const items = (input.items || []).map((it, idx) => {
     const itemFrom = it.period_from || b.period_from;
     const itemTo = it.period_to || b.period_to;
-    let invoices = null;
-    let cost = round2(it.total_cost);
-    if (it.cost_from_invoices) {
-      invoices = invoicesForItem(input.invoices, it.type_id, itemFrom, itemTo);
-      cost = round2(invoices.reduce((sum, x) => sum + x.portion, 0));
-    }
     const meter = it.meter_id ? meterById.get(it.meter_id) : null;
     const rFrom = it.reading_from_id ? readingById.get(it.reading_from_id) : null;
     const rTo = it.reading_to_id ? readingById.get(it.reading_to_id) : null;
@@ -224,7 +301,22 @@ export function computeBilling(input) {
     } else if (meter && it.distribution === 'meter') {
       detail = `${meterLabel(meter)}: spotřeba ${fmtNum(tenantCons)} ${meterUnit(meter)}`.trim();
     }
-    const totalCons = num(it.total_consumption) > 0 ? num(it.total_consumption) : tenantCons;
+    const totalCons = num(it.total_consumption) > 0 ? num(it.total_consumption) : it.distribution === 'meter' ? tenantCons : 0;
+
+    let invoices = null;
+    let estimate = null;
+    let estimated = 0;
+    let cost = round2(it.total_cost);
+    if (it.cost_from_invoices) {
+      invoices = invoicesForItem(input.invoices, it.type_id, itemFrom, itemTo);
+      const gaps = itemFrom && itemTo ? uncoveredIntervals(itemFrom, itemTo, invoices) : [];
+      // VT/NT celého odběrného místa: poměrně podle podílu nájemníka na celkové spotřebě
+      const scale = tenantCons > 0 ? totalCons / tenantCons : 1;
+      const cons = { total: totalCons, vt: diff?.vt !== undefined ? diff.vt * scale : null, nt: diff?.nt !== undefined ? diff.nt * scale : null };
+      estimate = gaps.length ? estimateCost(input.tariffs, it.type_id, gaps, itemFrom, itemTo, cons) : [];
+      estimated = round2(estimate.reduce((sum, p) => sum + p.amount, 0));
+      cost = round2(invoices.reduce((sum, x) => sum + x.portion, 0) + estimated);
+    }
 
     let share = 0;
     let ratio = null;
@@ -245,11 +337,14 @@ export function computeBilling(input) {
       total_cost: cost,
       tenant_consumption: round3(tenantCons),
       total_consumption: round3(totalCons),
+      unit: meter ? meterUnit(meter) : '',
       ratio,
       share,
       detail,
       diff,
       invoices,
+      estimate,
+      estimated,
       period_from: itemFrom,
       period_to: itemTo,
       distribution_label: DISTRIBUTIONS[it.distribution] || DISTRIBUTIONS.full,
@@ -273,18 +368,24 @@ export function computeBilling(input) {
     })
     .filter((a) => a.months > 0);
 
+  const adjustments = (input.adjustments || []).map((a) => ({ ...a, amount: round2(a.amount) }));
   const totalCosts = round2(items.reduce((s, i) => s + i.share, 0));
   const totalAdvances = round2(advances.reduce((s, a) => s + a.amount, 0));
-  const balance = round2(totalAdvances - totalCosts);
+  const totalAdjustments = round2(adjustments.reduce((s, a) => s + a.amount, 0));
+  const estimatedShare = round2(items.reduce((s, i) => s + (i.estimated && i.total_cost ? i.share * (i.estimated / i.total_cost) : 0), 0));
+  const balance = round2(totalAdvances - totalCosts + totalAdjustments);
 
   return {
     billing: { ...b, anniversary_day: annDay },
     items,
     advances,
+    adjustments,
     meters: meterTable(meters, b.period_from, b.period_to),
     totals: {
       costs: totalCosts,
       advances: totalAdvances,
+      adjustments: totalAdjustments,
+      estimated: estimatedShare,
       balance,
       result: balance > 0 ? 'overpayment' : balance < 0 ? 'underpayment' : 'even',
     },
